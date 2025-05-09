@@ -1,0 +1,35 @@
+config.env
+config.py
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+
+# Virtual environment
+.venv/
+env/
+venv/
+ENV/
+*.egg-info/
+
+# IDEs
+.vscode/
+.idea/
+
+# PostgreSQL client output
+*.sql
+
+# Environment variables
+.env
+config.py  # Optional: if you store secrets here instead of .env
+
+# Jupyter or notebook cache (if used)
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
