@@ -29,3 +29,18 @@ source venv/bin/activate
 ```bash
 pip install -r requirements.txt
 ```
+
+# Goals
+
+- The goal of this project is to create a Discord bot that can help you manage your tasks and projects.
+- The bot will allow you to create, update, and delete tasks, as well as assign them to different users.
+- This will automatically sync tasks with the users registered google calendar.
+- The bot will also generate a daily schedule for each user, based on their tasks and calendar events.
+- The bot will be able to send reminders and notifications to users about their tasks and events.
+- The bot will be able to generate reports and statistics about the tasks and projects. This includes:
+  - The time it took to complete the task
+  - The time it took to start the task from target goals
+  - The percent of tasks completed on time, both starting and finishing
+- The bot will be able to generate charts to show user progress and performance over time.
+- The bot will be able to integrate with other tools and services, such as Trello, Asana, and Google Calendar.
+- The bot will be able to use AI to generate tasks and projects based on user input and preferences.
