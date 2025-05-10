@@ -22,19 +22,31 @@ def init_db():
                     id SERIAL PRIMARY KEY,
                     user_id TEXT,
                     description TEXT,
-                    schedule_time TIME,                     -- e.g. 14:30 for optional static time
-                    schedule_date DATE,                     -- e.g. 2025-05-11 for optional static date
-                    duration_minutes INTEGER DEFAULT 15,    -- how long the task should take
-                    location TEXT,                          -- can be URL or physical location
-                    priority BOOLEAN DEFAULT FALSE,         -- is this a high-priority task?
-                    deadline TIMESTAMP,                     -- optional deadline
-                    mirrored_users TEXT[],                  -- optional list of user IDs to sync with
-                    due_time TIMESTAMP,                     -- legacy field for quick additions
+                    schedule_time TIME,
+                    schedule_date DATE,
+                    duration_minutes INTEGER DEFAULT 15,
+                    location TEXT,
+                    priority BOOLEAN DEFAULT FALSE,
+                    deadline TIMESTAMP,
+                    mirrored_users TEXT[],
+                    due_time TIMESTAMP,
                     start_time TIMESTAMP,
                     stop_time TIMESTAMP,
                     status TEXT DEFAULT 'pending'
                 )
             """)
+            # Patch in missing columns for existing installs
+            cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS schedule_time TIME;")
+            cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS schedule_date DATE;")
+            cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS duration_minutes INTEGER DEFAULT 15;")
+            cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS location TEXT;")
+            cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS priority BOOLEAN DEFAULT FALSE;")
+            cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS deadline TIMESTAMP;")
+            cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS mirrored_users TEXT[];")
+            cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS due_time TIMESTAMP;")
+            cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS start_time TIMESTAMP;")
+            cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS stop_time TIMESTAMP;")
+            cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';")
             # User settings table
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS settings (

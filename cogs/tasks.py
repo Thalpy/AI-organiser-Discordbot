@@ -116,7 +116,7 @@ class TaskManager(commands.Cog):
 
         msg = "**Your recent tasks:**\n"
         for row in rows:
-            msg += f"- `{row['id']}`: {row['description']} (**{row['status']}**)"
+            msg += f"- `{row['id']}`: {row['description']} (**{row['status']}**)\n"
         await interaction.response.send_message(msg, ephemeral=True)
 
     @app_commands.command(name="start", description="Start a task")
