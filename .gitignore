@@ -1,5 +1,7 @@
 config.env
 config.py
+# Google Credentials
+credentials/
 
 # Python
 __pycache__/
