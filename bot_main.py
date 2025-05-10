@@ -7,7 +7,7 @@ import discord
 import asyncio
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from config import DISCORD_TOKEN, DB_CONFIG
+from config import DISCORD_TOKEN, DB_CONFIG, DEBUG_GUILD_ID
 
 # --- DB Setup ---
 def get_connection():
@@ -48,16 +48,17 @@ async def setup_hook():
     init_db()
 
     # Debug
-    GUILD_ID = 538506324229619745
-    guild = discord.Object(id=GUILD_ID)
+    guild = discord.Object(id=DEBUG_GUILD_ID)
 
     # Clear and re-register commands for this guild only
     bot.tree.clear_commands(guild=guild)
     await bot.load_extension("cogs.tasks")
+    await bot.load_extension("cogs.calendar_oauth")
     await bot.tree.sync()
-    print("Commands synced.")
     for cmd in bot.tree.get_commands(guild=guild):
         print(f"↪ Slash command: /{cmd.name}")
+    print("Commands synced.")
+    
 
 @bot.event
 async def on_ready():

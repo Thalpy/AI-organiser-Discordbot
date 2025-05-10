@@ -7,6 +7,13 @@
 - by default, the database name is `taskdb`, the user is `taskbot`, and the password is `changeme`. You can change these values in the `config.env` file if you want.
 - Make sure to create a `config.env` as `.env` file is ignored by git. You can use the `config.env.example` file as a template.
 
+## Setting up google calendar API
+- To use the Google Calendar API, you need to create a project in the [Google Cloud Console](https://console.cloud.google.com/).
+- Create a new project and enable the Google Calendar API for that project.
+- Create a new OAuth 2.0 client ID and secret for your application. You can do this by going to the "Credentials" tab in the Google Cloud Console and clicking on "Create credentials".
+- Make sure to set the redirect URI to `http://localhost:8080/callback` or the URL of your auth server if you are running it on a different host.
+- Download the credentials JSON file and save it in the `./credentials/client_secret.json`.
+
 ## Installing Python
 - [Python](https://www.python.org/downloads/) is required to run the bot. Follow the instructions on the website to install it on your system.
 - Make sure to install Python 3.11 or higher.
@@ -14,7 +21,8 @@
 ```bash
 python --version
 ```
-- Next set up a virtual environment to keep the dependencies isolated. You can do this by running the following command in your terminal:
+- Use either `setup_and_run.bat` or `setup_and_run.sh` to set up the environment and run the bot. This will create a virtual environment, install the required dependencies, and run the bot.
+- Or manually set up a virtual environment to keep the dependencies isolated. You can do this by running the following command in your terminal:
 ```bash
 python -m venv venv
 ```
@@ -29,6 +37,8 @@ source venv/bin/activate
 ```bash
 pip install -r requirements.txt
 ```
+- Then run the auth server with `python auth_server.py` for the google calender integration. 
+- Then run the both with `bot_main.py` or `python -m bot_main` to start the bot.
 
 # Goals
 
