@@ -16,24 +16,68 @@ def get_connection():
 def init_db():
     with get_connection() as conn:
         with conn.cursor() as cur:
+            # Task list table
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS tasks (
                     id SERIAL PRIMARY KEY,
                     user_id TEXT,
                     description TEXT,
-                    due_time TIMESTAMP,
+                    schedule_time TIME,                     -- e.g. 14:30 for optional static time
+                    schedule_date DATE,                     -- e.g. 2025-05-11 for optional static date
+                    duration_minutes INTEGER DEFAULT 15,    -- how long the task should take
+                    location TEXT,                          -- can be URL or physical location
+                    priority BOOLEAN DEFAULT FALSE,         -- is this a high-priority task?
+                    deadline TIMESTAMP,                     -- optional deadline
+                    mirrored_users TEXT[],                  -- optional list of user IDs to sync with
+                    due_time TIMESTAMP,                     -- legacy field for quick additions
                     start_time TIMESTAMP,
                     stop_time TIMESTAMP,
                     status TEXT DEFAULT 'pending'
                 )
             """)
+            # User settings table
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     guild_id TEXT PRIMARY KEY,
                     reminder_channel_id TEXT
                 )
             """)
+            # User preferences table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS user_preferences (
+                    user_id TEXT PRIMARY KEY,
+                    work_start TIME DEFAULT '09:00',
+                    work_end TIME DEFAULT '17:00',
+                    lunch_duration_minutes INTEGER DEFAULT 30,
+                    time_zone TEXT DEFAULT 'GMT',
+                    lunch_window_start TIME DEFAULT '12:00',
+                    lunch_window_end TIME DEFAULT '14:00'
+                )
+            """)
+            # Task metrics table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS task_metrics (
+                    task_id INTEGER PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+                    total_time_minutes INTEGER DEFAULT 0,
+                    sessions_count INTEGER DEFAULT 0,
+                    delayed_count INTEGER DEFAULT 0,
+                    estimated_vs_actual_ratio FLOAT
+                )
+            """)
+            # Google Calendar OAuth token storage
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS calendar_tokens (
+                    user_id TEXT PRIMARY KEY,
+                    token TEXT,
+                    refresh_token TEXT,
+                    token_uri TEXT,
+                    client_id TEXT,
+                    client_secret TEXT,
+                    scopes TEXT
+                )
+            """)
             conn.commit()
+
 
 intents = discord.Intents.default()
 intents.messages = True
@@ -54,10 +98,14 @@ async def setup_hook():
     bot.tree.clear_commands(guild=guild)
     await bot.load_extension("cogs.tasks")
     await bot.load_extension("cogs.calendar_oauth")
+    await bot.load_extension("cogs.calendar_ui")
+    await bot.load_extension("cogs.calendar_push_test")
+    await bot.load_extension("cogs.preferences")
     await bot.tree.sync()
+    await bot.tree.sync(guild=guild)
+    print("Commands synced.")    
     for cmd in bot.tree.get_commands(guild=guild):
         print(f"↪ Slash command: /{cmd.name}")
-    print("Commands synced.")
     
 
 @bot.event

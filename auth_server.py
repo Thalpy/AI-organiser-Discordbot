@@ -1,9 +1,9 @@
 import os
 import json
 import psycopg2
-from flask import Flask, request
+from flask import Flask, request, redirect
 from google_auth_oauthlib.flow import Flow
-from config import DB_CONFIG
+from config import DB_CONFIG, GOOGLE_OAUTH_CLIENT_ID
 
 app = Flask(__name__)
 
@@ -15,6 +15,9 @@ SCOPES = [
 
 @app.route("/")
 def index():
+    # If it has code+state, forward to actual token handler
+    if 'code' in request.args and 'state' in request.args:
+        return redirect(f"/oauth2callback?code={request.args['code']}&state={request.args['state']}")
     return "✅ OAuth callback server is running."
 
 @app.route("/oauth2callback")
@@ -28,7 +31,7 @@ def oauth2callback():
     flow = Flow.from_client_secrets_file(
         CREDENTIALS_FILE,
         scopes=SCOPES,
-        redirect_uri="http://localhost:8080/oauth2callback"
+        redirect_uri="http://localhost:8080/oauth2callback"  # ← THIS MUST MATCH EXACTLY
     )
     flow.fetch_token(code=code)
     credentials = flow.credentials
