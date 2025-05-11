@@ -15,10 +15,11 @@ def get_connection():
     return psycopg2.connect(**DB_CONFIG)
 
 class TaskModal(discord.ui.Modal, title="📝 New Task"):
-    def __init__(self, user_id, task_name):
+    def __init__(self, user_id, task_name, task_id=None):
         super().__init__()
         self.user_id = user_id
         self.task_name = task_name
+        self.task_id = task_id 
 
         self.datetime_str = discord.ui.TextInput(label="Schedule (MM/DD HH:MM)", required=False)
         self.duration = discord.ui.TextInput(label="Duration in minutes (default 15)", required=False)
@@ -42,7 +43,7 @@ class TaskModal(discord.ui.Modal, title="📝 New Task"):
 
         await interaction.response.send_message(
             "✅ Task created. Would you like to configure more settings?",
-            view=PostCreateOptions(self.user_id),
+            view=PostCreateOptions(self.user_id, task_id=getattr(self, "task_id", None)),
             ephemeral=True
         )
 
@@ -117,9 +118,10 @@ class MirrorTimeModal(discord.ui.Modal, title="🕒 Mirror Time"):
             await interaction.response.send_message(f"❌ Failed to parse input: {e}", ephemeral=True)
 
 class PostCreateOptions(discord.ui.View):
-    def __init__(self, user_id):
+    def __init__(self, user_id, task_id=None):
         super().__init__(timeout=120)
         self.user_id = user_id
+        self.task_id = task_id
 
     @discord.ui.button(label="⭐ Set Priority", style=discord.ButtonStyle.primary)
     async def set_priority(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -179,27 +181,58 @@ class PostCreateOptions(discord.ui.View):
 
         with get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO tasks (
-                        user_id, description, schedule_time, schedule_date, duration_minutes,
-                        priority, deadline, mirrored_users, location, due_time
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    str(self.user_id),
-                    task,
-                    schedule_time,
-                    schedule_date,
-                    duration,
-                    priority,
-                    deadline,
-                    [m["user_id"] for m in mirrored_users] if mirrored_users else None,
-                    location,
-                    due_time
-                ))
+                if self.task_id is not None:
+                    cur.execute("""
+                        UPDATE tasks SET
+                            description = %s,
+                            schedule_time = %s,
+                            schedule_date = %s,
+                            duration_minutes = %s,
+                            priority = %s,
+                            deadline = %s,
+                            mirrored_users = %s,
+                            location = %s,
+                            due_time = %s
+                        WHERE id = %s AND user_id = %s
+                    """, (
+                        task,
+                        schedule_time,
+                        schedule_date,
+                        duration,
+                        priority,
+                        deadline,
+                        [m["user_id"] for m in mirrored_users] if mirrored_users else None,
+                        location,
+                        due_time,
+                        self.task_id,
+                        str(self.user_id)
+                    ))
+                else:
+                    cur.execute("""
+                        INSERT INTO tasks (
+                            user_id, description, schedule_time, schedule_date, duration_minutes,
+                            priority, deadline, mirrored_users, location, due_time
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        str(self.user_id),
+                        task,
+                        schedule_time,
+                        schedule_date,
+                        duration,
+                        priority,
+                        deadline,
+                        [m["user_id"] for m in mirrored_users] if mirrored_users else None,
+                        location,
+                        due_time
+                    ))
                 conn.commit()
 
         USER_TASK_CACHE.pop(self.user_id, None)
-        await interaction.response.send_message(f"✅ Task **{task}** saved to database.", ephemeral=True)
+        if self.task_id is not None:
+            await interaction.response.send_message(f"✏️ Task **{task}** updated.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"✅ Task **{task}** saved to database.", ephemeral=True)
+
 
 class TaskTodoModalCog(commands.Cog):
     def __init__(self, bot):
