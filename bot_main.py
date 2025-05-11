@@ -32,10 +32,12 @@ def init_db():
                     due_time TIMESTAMP,
                     start_time TIMESTAMP,
                     stop_time TIMESTAMP,
-                    status TEXT DEFAULT 'pending'
+                    status TEXT DEFAULT 'pending',
+                    num_sessions INTEGER DEFAULT 0,
+                    actual_duration FLOAT DEFAULT 0
                 )
             """)
-            # Patch in missing columns for existing installs
+            # Patch in missing columns for existing installs (For development - remove for production)
             cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS schedule_time TIME;")
             cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS schedule_date DATE;")
             cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS duration_minutes INTEGER DEFAULT 15;")
@@ -47,6 +49,9 @@ def init_db():
             cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS start_time TIMESTAMP;")
             cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS stop_time TIMESTAMP;")
             cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';")
+            cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS num_sessions INTEGER DEFAULT 0;")
+            cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS actual_duration FLOAT DEFAULT 0;")
+
             # User settings table
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
@@ -54,6 +59,7 @@ def init_db():
                     reminder_channel_id TEXT
                 )
             """)
+
             # User preferences table
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS user_preferences (
@@ -66,6 +72,7 @@ def init_db():
                     lunch_window_end TIME DEFAULT '14:00'
                 )
             """)
+
             # Task metrics table
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS task_metrics (
@@ -76,6 +83,7 @@ def init_db():
                     estimated_vs_actual_ratio FLOAT
                 )
             """)
+
             # Google Calendar OAuth token storage
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS calendar_tokens (
@@ -89,6 +97,7 @@ def init_db():
                 )
             """)
             conn.commit()
+
 
 
 intents = discord.Intents.default()
@@ -109,6 +118,8 @@ async def setup_hook():
     # Clear and re-register commands for this guild only
     bot.tree.clear_commands(guild=guild)
     await bot.load_extension("cogs.tasks")
+    await bot.load_extension("cogs.todo_modal")
+    await bot.load_extension("cogs.list_modal")
     await bot.load_extension("cogs.calendar_oauth")
     await bot.load_extension("cogs.calendar_ui")
     await bot.load_extension("cogs.calendar_push_test")
