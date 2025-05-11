@@ -1,14 +1,21 @@
-# This is the start of the cog file: cogs/calendar_oauth.py
-# It registers a /setup_calendar command and generates the Google OAuth URL for each user.
-
 from discord.ext import commands
 from discord import app_commands
 import discord
 import urllib.parse
+import json
+import os
 
-# Constants you need to replace
-CLIENT_ID = "YOUR_GOOGLE_OAUTH_CLIENT_ID"
-REDIRECT_URI = "http://localhost:8080/"
+# === Load client_id from credentials file ===
+CREDENTIALS_FILE = "credentials/client_secret.json"
+
+if not os.path.exists(CREDENTIALS_FILE):
+    raise FileNotFoundError(f"Missing {CREDENTIALS_FILE}. Upload your OAuth credentials.")
+
+with open(CREDENTIALS_FILE) as f:
+    client_info = json.load(f)
+    CLIENT_ID = client_info["web"]["client_id"]
+    REDIRECT_URI = client_info["web"]["redirect_uris"][0]  # Typically http://localhost:8080/oauth2callback
+
 SCOPES = [
     "https://www.googleapis.com/auth/calendar.events",
     "https://www.googleapis.com/auth/calendar.readonly",
@@ -21,7 +28,7 @@ class CalendarOAuth(commands.Cog):
     @app_commands.command(name="setup_calendar", description="Link your Google Calendar account")
     async def setup_calendar(self, interaction: discord.Interaction):
         user_id = interaction.user.id
-        state = str(user_id)  # Can expand later with nonce/hash
+        state = str(user_id)
 
         params = {
             "client_id": CLIENT_ID,
