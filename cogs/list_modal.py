@@ -1,12 +1,14 @@
 from discord.ext import commands
 from discord import app_commands
 import discord
-import psycopg2
-from config import DB_CONFIG
+from utils.database import TaskQueries, get_connection
+from utils.discord_helpers import EmbedBuilder, ErrorHandler, MessageFormatter
+from utils.logging_config import get_user_action_logger, get_performance_logger
+import logging
 
-# DB connection
-def get_connection():
-    return psycopg2.connect(**DB_CONFIG)
+logger = logging.getLogger(__name__)
+user_logger = get_user_action_logger()
+perf_logger = get_performance_logger("list_modal")
 
 # --- View with a dropdown and buttons for selected task ---
 class TaskDropdownView(discord.ui.View):
@@ -32,47 +34,85 @@ class TaskDropdownView(discord.ui.View):
 
     async def button_callback(self, interaction: discord.Interaction):
         if not self.selected_task_id:
-            await interaction.response.send_message("⚠️ Please select a task first.", ephemeral=True)
+            embed = EmbedBuilder.warning_embed(
+                "No Task Selected",
+                "Please select a task from the dropdown first."
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
         user_id = str(interaction.user.id)
         task_id = self.selected_task_id
         action = interaction.data["custom_id"]
+        
+        logger.info(f"User {user_id} performing action '{action}' on task {task_id}")
 
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                if action == "delete":
-                    cur.execute("DELETE FROM tasks WHERE id = %s AND user_id = %s", (task_id, user_id))
-                    conn.commit()
-                    await interaction.response.send_message("🗑️ Task deleted.", ephemeral=True)
-                elif action == "complete":
-                    cur.execute("UPDATE tasks SET status = 'done' WHERE id = %s AND user_id = %s", (task_id, user_id))
-                    conn.commit()
-                    await interaction.response.send_message("✅ Task marked as complete.", ephemeral=True)
-                elif action == "edit":
-                    with get_connection() as edit_conn:
-                        with edit_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as edit_cur:
-                            edit_cur.execute("""
-                            SELECT description, schedule_time, schedule_date, duration_minutes, deadline, location
-                            FROM tasks WHERE id = %s AND user_id = %s
-                            """, (task_id, user_id))
-                            row = edit_cur.fetchone()
-                            if not row:
-                                await interaction.response.send_message("❌ Task not found or access denied.", ephemeral=True)
-                                return
+        try:
+            if action == "delete":
+                success = await TaskQueries.delete_task(task_id, user_id)
+                if success:
+                    embed = EmbedBuilder.success_embed(
+                        "Task Deleted",
+                        "The task has been permanently removed."
+                    )
+                    user_logger.log_task_action(user_id, "deleted", task_id)
+                else:
+                    embed = EmbedBuilder.error_embed(
+                        "Delete Failed",
+                        "Could not delete the task. It may have already been removed."
+                    )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                
+            elif action == "complete":
+                success = await TaskQueries.update_task(task_id, user_id, status='done')
+                if success:
+                    embed = EmbedBuilder.success_embed(
+                        "Task Completed",
+                        "The task has been marked as complete! 🎉"
+                    )
+                    user_logger.log_task_action(user_id, "completed", task_id)
+                else:
+                    embed = EmbedBuilder.error_embed(
+                        "Update Failed",
+                        "Could not mark the task as complete."
+                    )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                
+            elif action == "edit":
+                # Get task details for editing
+                task = await TaskQueries.get_task_by_id(task_id, user_id)
+                if not task:
+                    embed = EmbedBuilder.error_embed(
+                        "Task Not Found",
+                        "The task was not found or you don't have permission to edit it."
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
 
-                    from cogs.todo_modal import TaskModal
-                    modal = TaskModal(user_id, row['description'], task_id=task_id)
-                    modal.task_id = task_id  # Mark this as an edit modal
-                    if row['schedule_time'] and row['schedule_date']:
-                        modal.datetime_str.default = f"{row['schedule_date'].month:02}/{row['schedule_date'].day:02} {row['schedule_time'].strftime('%H:%M')}"
-                    if row['duration_minutes']:
-                        modal.duration.default = str(row['duration_minutes'])
-                    if row['deadline']:
-                        modal.deadline.default = row['deadline'].strftime('%Y-%m-%d %H:%M')
-                    if row['location']:
-                        modal.location.default = row['location']
-                    await interaction.response.send_modal(modal)
+                # Import and create modal for editing
+                from cogs.todo_modal import TaskModal
+                modal = TaskModal(user_id, task['description'], task_id=task_id)
+                modal.task_id = task_id  # Mark this as an edit modal
+                
+                # Pre-fill modal with existing data
+                if task.get('schedule_time') and task.get('schedule_date'):
+                    modal.datetime_str.default = f"{task['schedule_date'].month:02}/{task['schedule_date'].day:02} {task['schedule_time'].strftime('%H:%M')}"
+                if task.get('duration_minutes'):
+                    modal.duration.default = str(task['duration_minutes'])
+                if task.get('deadline'):
+                    modal.deadline.default = task['deadline'].strftime('%Y-%m-%d %H:%M')
+                if task.get('location'):
+                    modal.location.default = task['location']
+                
+                await interaction.response.send_modal(modal)
+                user_logger.log_task_action(user_id, "opened_edit_modal", task_id)
+                
+        except Exception as e:
+            logger.error(f"Error in button callback for user {user_id}, action {action}: {e}")
+            await ErrorHandler.handle_error(
+                interaction, e,
+                f"Failed to {action} the task. Please try again."
+            )
 
 class TaskDropdown(discord.ui.Select):
     def __init__(self, tasks):
@@ -131,28 +171,61 @@ class TaskListCog(commands.Cog):
 
     async def send_task_list(self, interaction: discord.Interaction, filter_status="pending"):
         user_id = str(interaction.user.id)
+        logger.info(f"User {user_id} requesting task list with filter: {filter_status}")
+        
+        try:
+            perf_logger.start_timer("load_task_list")
+            
+            # Get task counts and tasks using utility functions
+            task_counts = await TaskQueries.get_task_counts(user_id)
+            tasks = await TaskQueries.get_user_tasks(user_id, status=filter_status, limit=25)
+            
+            perf_logger.end_timer("load_task_list", f"Loaded {len(tasks)} tasks for user {user_id}")
+            
+            # Create improved summary embed
+            status_emoji = {
+                'pending': '🕓',
+                'done': '✅',
+                'in_progress': '▶️'
+            }
+            
+            embed = EmbedBuilder.create_embed(
+                title=f"📊 Task Summary - {status_emoji.get(filter_status, '📋')} {filter_status.title()}",
+                description=f"Showing your {filter_status} tasks",
+                color=EmbedBuilder.PRIMARY,
+                fields=[
+                    ("📈 Total Tasks", str(task_counts['total']), True),
+                    ("🕓 Pending", str(task_counts['pending']), True),
+                    ("✅ Completed", str(task_counts['done']), True),
+                    ("📋 Showing", f"{len(tasks)} {filter_status} tasks", False)
+                ],
+                footer=f"Use buttons below to manage tasks • Filter: {filter_status}"
+            )
 
-        with get_connection() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("SELECT COUNT(*) FROM tasks WHERE user_id = %s", (user_id,))
-                total = cur.fetchone()["count"]
+            if not tasks:
+                embed.add_field(
+                    name="No Tasks Found", 
+                    value=f"You don't have any {filter_status} tasks.", 
+                    inline=False
+                )
+                view = TaskToggleFooter(filter_status)
+            else:
+                view = TaskDropdownView(tasks)
 
-                cur.execute("SELECT COUNT(*) FROM tasks WHERE user_id = %s AND status = 'done'", (user_id,))
-                done = cur.fetchone()["count"]
-
-                cur.execute("SELECT id, description, due_time, duration_minutes, deadline, location, priority FROM tasks WHERE user_id = %s AND status = %s ORDER BY id DESC LIMIT 25", (user_id, filter_status))
-                tasks = cur.fetchall()
-
-        active = total - done
-
-        summary_embed = discord.Embed(
-            title="📊 Task Summary",
-            description=f"**Total:** {total}  •  **Active:** {active}  •  **Completed:** {done}",
-            color=discord.Color.purple()
-        )
-
-        await interaction.response.send_message(embed=summary_embed, view=TaskDropdownView(tasks), ephemeral=True)
-        await interaction.followup.send(view=TaskToggleFooter(filter_status), ephemeral=True)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            
+            # Add toggle footer if we have tasks
+            if tasks:
+                await interaction.followup.send(view=TaskToggleFooter(filter_status), ephemeral=True)
+            
+            user_logger.log_command_usage(user_id, "list", str(interaction.guild_id) if interaction.guild else None)
+            
+        except Exception as e:
+            logger.error(f"Failed to load task list for user {user_id}: {e}")
+            await ErrorHandler.handle_error(
+                interaction, e,
+                "Failed to load your task list. Please try again."
+            )
 
 async def setup(bot):
     await bot.add_cog(TaskListCog(bot))

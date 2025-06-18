@@ -1,50 +1,61 @@
-# cogs/preferences.py
+# cogs/preferences.py - Updated with utilities and logging
 
 from discord.ext import commands
 from discord import app_commands
 import discord
 from discord.ui import View, Button, Modal, TextInput
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from config import DB_CONFIG
+from utils.database import UserQueries
+from utils.discord_helpers import EmbedBuilder, ErrorHandler, ValidationHelpers
+from utils.validation import UserPreferencesValidator, InputValidator
+import logging
 
-def get_connection():
-    return psycopg2.connect(**DB_CONFIG)
+logger = logging.getLogger(__name__)
 
 class Preferences(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        logger.info("Preferences cog initialized")
 
     @app_commands.command(name="preferences", description="Edit your user preferences for scheduling")
     async def preferences(self, interaction: discord.Interaction):
         user_id = str(interaction.user.id)
+        logger.info(f"User {user_id} accessing preferences")
 
-        with get_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    INSERT INTO user_preferences (user_id)
-                    VALUES (%s)
-                    ON CONFLICT (user_id) DO NOTHING
-                """, (user_id,))
-                conn.commit()
+        try:
+            # Get user preferences (creates defaults if none exist)
+            prefs = await UserQueries.get_user_preferences(user_id)
 
-                cur.execute("SELECT * FROM user_preferences WHERE user_id = %s", (user_id,))
-                prefs = cur.fetchone()
+            embed = EmbedBuilder.create_embed(
+                title="⚙️ Your Preferences",
+                description="Configure your work schedule and preferences",
+                color=EmbedBuilder.SECONDARY,
+                fields=[
+                    ("🌅 Work Start", str(prefs["work_start"]), True),
+                    ("🌇 Work End", str(prefs["work_end"]), True),
+                    ("🍽️ Lunch Duration", f"{prefs['lunch_duration_minutes']} minutes", True),
+                    ("⏰ Lunch Window", f"{prefs['lunch_window_start']} - {prefs['lunch_window_end']}", True),
+                    ("🌍 Time Zone", prefs["time_zone"], True),
+                    ("💡 Tip", "Click buttons below to modify settings", False)
+                ],
+                footer="Changes are saved automatically"
+            )
 
-        embed = discord.Embed(title="🛠️ Your Preferences", color=discord.Color.teal())
-        embed.add_field(name="Work Start", value=str(prefs["work_start"]), inline=True)
-        embed.add_field(name="Work End", value=str(prefs["work_end"]), inline=True)
-        embed.add_field(name="Lunch Duration", value=f"{prefs['lunch_duration_minutes']} min", inline=True)
-        embed.add_field(name="Lunch Window", value=f"{prefs['lunch_window_start']}–{prefs['lunch_window_end']}", inline=True)
-        embed.add_field(name="Time Zone", value=prefs["time_zone"], inline=True)
-
-        view = PreferencesView(user_id)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            view = PreferencesView(user_id)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            logger.info(f"Preferences displayed for user {user_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to load preferences for user {user_id}: {e}")
+            await ErrorHandler.handle_error(
+                interaction, e, 
+                "Failed to load your preferences. Please try again."
+            )
 
 class PreferencesView(View):
     def __init__(self, user_id):
         super().__init__(timeout=180)
         self.user_id = user_id
+        logger.debug(f"PreferencesView created for user {user_id}")
 
         self.add_item(EditButton("Work Start", "work_start", "HH:MM (24h)", self.user_id))
         self.add_item(EditButton("Work End", "work_end", "HH:MM (24h)", self.user_id))
@@ -61,21 +72,28 @@ class EditButton(Button):
         self.user_id = user_id
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(EditPreferenceModal(self.label, self.field_name, self.placeholder, self.user_id))
+        logger.debug(f"User {self.user_id} clicked edit button for {self.field_name}")
+        try:
+            await interaction.response.send_modal(
+                EditPreferenceModal(self.label, self.field_name, self.placeholder, self.user_id)
+            )
+        except Exception as e:
+            logger.error(f"Error opening modal for {self.field_name}: {e}")
+            await ErrorHandler.handle_error(interaction, e, "Failed to open settings modal.")
 
 class TimeZoneSelect(discord.ui.Select):
     def __init__(self, user_id):
         self.user_id = user_id
 
         options = [
-            discord.SelectOption(label="GMT"),
-            discord.SelectOption(label="UTC"),
-            discord.SelectOption(label="Europe/London"),
-            discord.SelectOption(label="Europe/Berlin"),
-            discord.SelectOption(label="America/New_York"),
-            discord.SelectOption(label="America/Los_Angeles"),
-            discord.SelectOption(label="Asia/Tokyo"),
-            discord.SelectOption(label="Asia/Kolkata"),
+            discord.SelectOption(label="GMT", description="Greenwich Mean Time"),
+            discord.SelectOption(label="UTC", description="Coordinated Universal Time"),
+            discord.SelectOption(label="Europe/London", description="London, UK"),
+            discord.SelectOption(label="Europe/Berlin", description="Berlin, Germany"),
+            discord.SelectOption(label="America/New_York", description="New York, USA"),
+            discord.SelectOption(label="America/Los_Angeles", description="Los Angeles, USA"),
+            discord.SelectOption(label="Asia/Tokyo", description="Tokyo, Japan"),
+            discord.SelectOption(label="Asia/Kolkata", description="Mumbai, India"),
         ]
 
         super().__init__(
@@ -87,17 +105,40 @@ class TimeZoneSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         selected_zone = self.values[0]
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE user_preferences
-                    SET time_zone = %s
-                    WHERE user_id = %s
-                """, (selected_zone, self.user_id))
-                conn.commit()
-
-        await interaction.response.send_message(f"🕓 Time zone set to `{selected_zone}`", ephemeral=True)
-
+        logger.info(f"User {self.user_id} updating timezone to {selected_zone}")
+        
+        try:
+            # Validate timezone
+            valid, validated_zone, error = InputValidator.validate_timezone(selected_zone)
+            if not valid:
+                embed = EmbedBuilder.error_embed("Invalid Timezone", error)
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            # Update preference
+            success = await UserQueries.update_user_preference(self.user_id, 'time_zone', validated_zone)
+            
+            if success:
+                embed = EmbedBuilder.success_embed(
+                    "Timezone Updated",
+                    f"Your timezone has been set to **{validated_zone}**"
+                )
+                logger.info(f"Timezone updated successfully for user {self.user_id}")
+            else:
+                embed = EmbedBuilder.error_embed(
+                    "Update Failed",
+                    "Could not update your timezone. Please try again."
+                )
+                logger.error(f"Failed to update timezone for user {self.user_id}")
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            logger.error(f"Error updating timezone for user {self.user_id}: {e}")
+            await ErrorHandler.handle_error(
+                interaction, e,
+                "Failed to update timezone. Please try again."
+            )
 
 class EditPreferenceModal(Modal, title="Edit Preference"):
     def __init__(self, label, field_name, placeholder, user_id):
@@ -107,48 +148,89 @@ class EditPreferenceModal(Modal, title="Edit Preference"):
         self.user_id = user_id
         self.input = TextInput(label=label, placeholder=placeholder, required=True)
         self.add_item(self.input)
+        logger.debug(f"EditPreferenceModal created for {field_name}")
 
     async def on_submit(self, interaction: discord.Interaction):
         value = self.input.value.strip()
+        logger.info(f"User {self.user_id} updating {self.field_name} to {value}")
 
         try:
-            # --- Validate Time ---
+            # Validate based on field type
             if self.field_name in ["work_start", "work_end", "lunch_window_start", "lunch_window_end"]:
-                hour, minute = map(int, value.split(":"))
-                if not (0 <= hour <= 23 and 0 <= minute <= 59):
-                    raise ValueError("Invalid time range")
-                value = f"{hour:02d}:{minute:02d}"
+                valid, time_obj, error = InputValidator.validate_time_input(value)
+                if not valid:
+                    embed = EmbedBuilder.error_embed("Invalid Time", error)
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
+                
+                # Additional validation for work hours
+                if self.field_name in ["work_start", "work_end"]:
+                    # Get current preferences to validate work hours together
+                    prefs = await UserQueries.get_user_preferences(self.user_id)
+                    start_time = value if self.field_name == "work_start" else str(prefs.get("work_start", "09:00"))
+                    end_time = value if self.field_name == "work_end" else str(prefs.get("work_end", "17:00"))
+                    
+                    work_valid, work_error = UserPreferencesValidator.validate_work_hours(start_time, end_time)
+                    if not work_valid:
+                        embed = EmbedBuilder.error_embed("Invalid Work Hours", work_error)
+                        await interaction.response.send_message(embed=embed, ephemeral=True)
+                        return
+                
+                validated_value = time_obj.strftime('%H:%M')
 
-            # --- Validate Integer Duration ---
             elif self.field_name == "lunch_duration_minutes":
-                minutes = int(value)
-                if minutes < 10 or minutes > 180:
-                    raise ValueError("Lunch must be 10–180 minutes")
-                value = str(minutes)
+                valid, duration, error = InputValidator.validate_duration_input(value)
+                if not valid:
+                    embed = EmbedBuilder.error_embed("Invalid Duration", error)
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
+                
+                if duration < 10 or duration > 180:
+                    embed = EmbedBuilder.error_embed(
+                        "Invalid Duration", 
+                        "Lunch duration must be between 10 and 180 minutes"
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
+                
+                validated_value = str(duration)
 
-            # --- Validate Time Zone ---
             elif self.field_name == "time_zone":
-                valid_zones = [
-                    "GMT", "UTC", "Europe/London", "Europe/Berlin", "America/New_York",
-                    "America/Los_Angeles", "Asia/Tokyo", "Asia/Kolkata"
-                ]
-                if value not in valid_zones:
-                    raise ValueError(f"Use a valid time zone. e.g. 'Europe/London'")
+                valid, timezone, error = InputValidator.validate_timezone(value)
+                if not valid:
+                    embed = EmbedBuilder.error_embed("Invalid Timezone", error)
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
+                validated_value = timezone
+
+            else:
+                validated_value = value
 
             # Update database
-            with get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(f"""
-                        UPDATE user_preferences
-                        SET {self.field_name} = %s
-                        WHERE user_id = %s
-                    """, (value, self.user_id))
-                    conn.commit()
+            success = await UserQueries.update_user_preference(self.user_id, self.field_name, validated_value)
+            
+            if success:
+                embed = EmbedBuilder.success_embed(
+                    "Preference Updated",
+                    f"**{self.label}** has been updated to `{validated_value}`"
+                )
+                logger.info(f"Successfully updated {self.field_name} for user {self.user_id}")
+            else:
+                embed = EmbedBuilder.error_embed(
+                    "Update Failed",
+                    "Could not update your preference. Please try again."
+                )
+                logger.error(f"Failed to update {self.field_name} for user {self.user_id}")
 
-            await interaction.response.send_message(f"✅ Updated **{self.field_name}** to `{value}`.", ephemeral=True)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
         except Exception as e:
-            await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+            logger.error(f"Error updating {self.field_name} for user {self.user_id}: {e}")
+            await ErrorHandler.handle_error(
+                interaction, e,
+                f"Failed to update {self.label.lower()}. Please try again."
+            )
 
 async def setup(bot):
     await bot.add_cog(Preferences(bot))
+    logger.info("Preferences cog loaded successfully")

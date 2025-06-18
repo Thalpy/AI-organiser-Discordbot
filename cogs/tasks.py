@@ -3,12 +3,8 @@ from discord import app_commands
 import discord
 import datetime
 from typing import Optional, List
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from config import DB_CONFIG
-
-def get_connection():
-    return psycopg2.connect(**DB_CONFIG)
+from utils.database import TaskQueries, get_connection
+from utils.discord_helpers import EmbedBuilder, ErrorHandler, MessageFormatter
 
 class TaskManager(commands.Cog):
     def __init__(self, bot):
@@ -17,17 +13,20 @@ class TaskManager(commands.Cog):
     @app_commands.command(name="start", description="Start a task")
     async def start_task(self, interaction: discord.Interaction):
         user_id = str(interaction.user.id)
-        with get_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT id, description FROM tasks
-                    WHERE user_id = %s AND status = 'pending'
-                    ORDER BY due_time ASC NULLS LAST, id ASC LIMIT 10
-                """, (user_id,))
-                tasks = cur.fetchall()
+        
+        try:
+            tasks = await TaskQueries.get_user_tasks(user_id, status='pending', limit=10)
 
-        if not tasks:
-            await interaction.response.send_message("No pending tasks found.", ephemeral=True)
+            if not tasks:
+                embed = EmbedBuilder.info_embed(
+                    title="No Pending Tasks",
+                    description="You don't have any pending tasks to start.",
+                    footer="Use /add to create a new task"
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+        except Exception as e:
+            await ErrorHandler.handle_error(interaction, e, "Failed to load your tasks.")
             return
 
         class TaskView(discord.ui.View):
@@ -37,22 +36,39 @@ class TaskManager(commands.Cog):
                     self.add_item(discord.ui.Button(label=t['description'][:40], style=discord.ButtonStyle.primary, custom_id=str(t['id'])))
 
         async def button_callback(i: discord.Interaction):
-            task_id = int(i.data['custom_id'])
-            now = datetime.datetime.now()
-            with get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        UPDATE tasks
-                        SET start_time = %s, status = 'in_progress'
-                        WHERE id = %s
-                    """, (now, task_id))
-                    cur.execute("""
-                        UPDATE tasks
-                        SET num_sessions = COALESCE(num_sessions, 0) + 1
-                        WHERE id = %s
-                    """, (task_id,))
-                    conn.commit()
-            await i.response.edit_message(content=f"▶️ Started task `{task_id}`.", view=None)
+            try:
+                task_id = int(i.data['custom_id'])
+                now = datetime.datetime.now()
+                
+                # Get the task details first
+                task = await TaskQueries.get_task_by_id(task_id, user_id)
+                if not task:
+                    await ErrorHandler.handle_error(i, Exception("Task not found"), "Task not found.")
+                    return
+                
+                # Update task status
+                success = await TaskQueries.update_task(
+                    task_id, user_id,
+                    start_time=now,
+                    status='in_progress',
+                    num_sessions=(task.get('num_sessions', 0) or 0) + 1
+                )
+                
+                if success:
+                    embed = EmbedBuilder.success_embed(
+                        title="Task Started!",
+                        description=f"You're now working on: **{task['description']}**",
+                        fields=[
+                            ("Started At", MessageFormatter.format_time(now), True),
+                            ("Estimated Duration", MessageFormatter.format_duration(task.get('duration_minutes', 15)), True)
+                        ],
+                        footer="Use /finish to complete or /delay to pause"
+                    )
+                    await i.response.edit_message(embed=embed, view=None)
+                else:
+                    await ErrorHandler.handle_error(i, Exception("Update failed"), "Could not start the task.")
+            except Exception as e:
+                await ErrorHandler.handle_error(i, e, "Failed to start the task.")
 
         view = TaskView(tasks)
         for item in view.children:
@@ -63,53 +79,101 @@ class TaskManager(commands.Cog):
     @app_commands.command(name="finish", description="Finish your current task")
     async def finish_task(self, interaction: discord.Interaction):
         user_id = str(interaction.user.id)
-        now = datetime.datetime.now()
-        with get_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT id, start_time FROM tasks
-                    WHERE user_id = %s AND status = 'in_progress'
-                    ORDER BY start_time DESC LIMIT 1
-                """, (user_id,))
-                task = cur.fetchone()
-                if not task:
-                    await interaction.response.send_message("No task in progress.", ephemeral=True)
-                    return
-
-                duration = (now - task['start_time']).total_seconds() / 60
-
-                cur.execute("""
-                    UPDATE tasks
-                    SET stop_time = %s, status = 'done', actual_duration = COALESCE(actual_duration, 0) + %s
-                    WHERE id = %s
-                """, (now, duration, task['id']))
-                conn.commit()
-
-        await interaction.response.send_message(f"✅ Finished task `{task['id']}` after {int(duration)} minutes.", ephemeral=True)
+        
+        try:
+            tasks = await TaskQueries.get_user_tasks(user_id, status='in_progress', limit=1)
+            
+            if not tasks:
+                embed = EmbedBuilder.warning_embed(
+                    title="No Active Task",
+                    description="You don't have any tasks in progress.",
+                    footer="Use /start to begin working on a task"
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            task = tasks[0]
+            now = datetime.datetime.now()
+            
+            # Calculate duration
+            duration_minutes = 0
+            if task.get('start_time'):
+                duration = now - task['start_time']
+                duration_minutes = int(duration.total_seconds() / 60)
+            
+            # Update task
+            success = await TaskQueries.update_task(
+                task['id'], user_id,
+                stop_time=now,
+                status='done',
+                actual_duration=(task.get('actual_duration', 0) or 0) + duration_minutes
+            )
+            
+            if success:
+                embed = EmbedBuilder.success_embed(
+                    title="Task Completed!",
+                    description=f"**{task['description']}** has been marked as complete.",
+                    fields=[
+                        ("Duration", MessageFormatter.format_duration(duration_minutes), True),
+                        ("Completed At", MessageFormatter.format_time(now), True)
+                    ],
+                    footer=f"Task ID: {task['id']}"
+                )
+            else:
+                embed = EmbedBuilder.error_embed(
+                    title="Update Failed",
+                    description="Could not update the task status."
+                )
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            await ErrorHandler.handle_error(interaction, e, "Failed to finish the task.")
 
     @app_commands.command(name="delay", description="Delay the current task")
     async def delay_task(self, interaction: discord.Interaction):
         user_id = str(interaction.user.id)
-        with get_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT id FROM tasks
-                    WHERE user_id = %s AND status = 'in_progress'
-                    ORDER BY start_time DESC LIMIT 1
-                """, (user_id,))
-                task = cur.fetchone()
-                if not task:
-                    await interaction.response.send_message("No task is currently in progress.", ephemeral=True)
-                    return
-
-                cur.execute("""
-                    UPDATE tasks
-                    SET start_time = NULL, status = 'pending'
-                    WHERE id = %s
-                """, (task['id'],))
-                conn.commit()
-
-        await interaction.response.send_message(f"⏸️ Delayed task `{task['id']}`.", ephemeral=True)
+        
+        try:
+            tasks = await TaskQueries.get_user_tasks(user_id, status='in_progress', limit=1)
+            
+            if not tasks:
+                embed = EmbedBuilder.warning_embed(
+                    title="No Active Task",
+                    description="You don't have any tasks in progress to delay."
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            task = tasks[0]
+            
+            # Update task status
+            success = await TaskQueries.update_task(
+                task['id'], user_id,
+                start_time=None,
+                status='pending'
+            )
+            
+            if success:
+                embed = EmbedBuilder.warning_embed(
+                    title="Task Delayed",
+                    description=f"**{task['description']}** has been moved back to pending.",
+                    fields=[
+                        ("Status", "🕓 Pending", True),
+                        ("Next Step", "Use /start when ready to resume", False)
+                    ],
+                    footer=f"Task ID: {task['id']}"
+                )
+            else:
+                embed = EmbedBuilder.error_embed(
+                    title="Update Failed",
+                    description="Could not delay the task."
+                )
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            await ErrorHandler.handle_error(interaction, e, "Failed to delay the task.")
 
 async def setup(bot):
     await bot.add_cog(TaskManager(bot))
