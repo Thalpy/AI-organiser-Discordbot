@@ -213,7 +213,8 @@ async def setup_hook():
             "cogs.calendar_push_test",
             "cogs.preferences",
             "cogs.scheduler",
-            "cogs.notifications"
+            "cogs.notifications",
+            "cogs.persistent_reminders"
         ]
         
         for cog in cogs_to_load:

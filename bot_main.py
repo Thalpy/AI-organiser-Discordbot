@@ -169,6 +169,7 @@ async def setup_hook():
     await bot.load_extension("cogs.preferences")
     await bot.load_extension("cogs.scheduler")
     await bot.load_extension("cogs.notifications")
+    await bot.load_extension("cogs.persistent_reminders")
     await bot.tree.sync()
     await bot.tree.sync(guild=guild)
     print("Commands synced.")    

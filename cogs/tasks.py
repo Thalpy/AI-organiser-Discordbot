@@ -54,6 +54,11 @@ class TaskManager(commands.Cog):
                     num_sessions=(task.get('num_sessions', 0) or 0) + 1
                 )
                 
+                # Stop persistent reminders for this task
+                persistent_reminder_cog = i.client.get_cog("PersistentReminderManager")
+                if persistent_reminder_cog:
+                    await persistent_reminder_cog.stop_persistent_reminder(task_id, "Task started via /start command")
+                
                 if success:
                     embed = EmbedBuilder.success_embed(
                         title="Task Started!",
