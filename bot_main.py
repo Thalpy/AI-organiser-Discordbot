@@ -96,6 +96,49 @@ def init_db():
                     scopes TEXT
                 )
             """)
+
+            # Notification system tables
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS task_reminders (
+                    id SERIAL PRIMARY KEY,
+                    task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+                    reminder_type VARCHAR(50) NOT NULL,
+                    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(task_id, reminder_type)
+                )
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS notification_preferences (
+                    user_id TEXT PRIMARY KEY,
+                    task_reminders BOOLEAN DEFAULT TRUE,
+                    overdue_alerts BOOLEAN DEFAULT TRUE,
+                    daily_summaries BOOLEAN DEFAULT TRUE,
+                    reminder_minutes INTEGER DEFAULT 15,
+                    quiet_hours_start TIME DEFAULT NULL,
+                    quiet_hours_end TIME DEFAULT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS notification_log (
+                    id SERIAL PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    notification_type VARCHAR(50) NOT NULL,
+                    task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+                    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    delivery_status VARCHAR(20) DEFAULT 'sent',
+                    error_message TEXT DEFAULT NULL
+                )
+            """)
+
+            # Create indexes for performance
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_task_reminders_task_id ON task_reminders(task_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_notification_log_user_id ON notification_log(user_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_notification_log_sent_at ON notification_log(sent_at)")
+            
             conn.commit()
 
 
@@ -124,6 +167,8 @@ async def setup_hook():
     await bot.load_extension("cogs.calendar_ui")
     await bot.load_extension("cogs.calendar_push_test")
     await bot.load_extension("cogs.preferences")
+    await bot.load_extension("cogs.scheduler")
+    await bot.load_extension("cogs.notifications")
     await bot.tree.sync()
     await bot.tree.sync(guild=guild)
     print("Commands synced.")    
