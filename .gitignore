@@ -1,37 +1,95 @@
+# Configuration files
 config.env
 config.py
+.env
+
 # Google Credentials
 credentials/
+!credentials/.gitkeep
 
 # Python
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
-*.log
+*.pyc
+*$py.class
 
 # Virtual environment
 .venv/
 env/
 venv/
 ENV/
+env.bak/
+venv.bak/
 *.egg-info/
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
 
 # IDEs
 .vscode/
 .idea/
+*.swp
+*.swo
 
-# PostgreSQL client output
+# Logs
+*.log
+logs/
+*.log.*
+
+# Database
+*.db
+*.sqlite
 *.sql
 
-# Environment variables
-.env
-config.py  # Optional: if you store secrets here instead of .env
+# Uploads and temporary files
+uploads/
+*.tmp
+*.temp
+*.bak
+*.backup
 
-# Jupyter or notebook cache (if used)
-.ipynb_checkpoints/
+# Docker
+.dockerignore
+
+# Node.js (for frontend)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Frontend build
+frontend/build/
+frontend/dist/
 
 # OS
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Security
+*.pem
+*.key
+*.crt
+
+# Development tools
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+
+# Distribution / packaging
+build/
+dist/
+*.egg
+MANIFEST
