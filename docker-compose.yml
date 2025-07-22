@@ -6,19 +6,22 @@ services:
     image: postgres:15-alpine
     container_name: taskbot_postgres
     environment:
-      POSTGRES_DB: taskdb
+      POSTGRES_DB: taskbot_db
       POSTGRES_USER: taskbot
-      POSTGRES_PASSWORD: changeme
+      POSTGRES_PASSWORD: taskbot_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./database:/docker-entrypoint-initdb.d
+      - ./database/init:/docker-entrypoint-initdb.d
+    networks:
+      - taskbot_network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U taskbot -d taskdb"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test: ["CMD-SHELL", "pg_isready -U taskbot -d taskbot_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Redis Cache
   redis:
@@ -28,62 +31,136 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    networks:
+      - taskbot_network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+  # FastAPI Web Application
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: taskbot_web
+    environment:
+      - DATABASE_URL=postgresql://taskbot:taskbot_password@postgres:5432/taskbot_db
+      - REDIS_URL=redis://redis:6379/0
+      - DEBUG=true
+      - LOG_LEVEL=INFO
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - ./uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - taskbot_network
+    restart: unless-stopped
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 
   # Discord Bot
-  discord-bot:
+  bot:
     build:
       context: .
       dockerfile: Dockerfile.bot
     container_name: taskbot_discord
+    environment:
+      - DATABASE_URL=postgresql://taskbot:taskbot_password@postgres:5432/taskbot_db
+      - REDIS_URL=redis://redis:6379/0
+      - DEBUG=true
+      - LOG_LEVEL=INFO
+    volumes:
+      - .:/app
+      - ./logs:/app/logs
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    environment:
-      - DB_HOST=postgres
-      - REDIS_HOST=redis
-    env_file:
-      - .env
-    volumes:
-      - ./logs:/app/logs
-      - ./credentials:/app/credentials
+    networks:
+      - taskbot_network
     restart: unless-stopped
+    command: python bot_main.py
 
-  # Web API Server
-  web-api:
+  # Celery Worker for Background Tasks
+  worker:
     build:
       context: .
       dockerfile: Dockerfile.web
-    container_name: taskbot_web_api
+    container_name: taskbot_worker
+    environment:
+      - DATABASE_URL=postgresql://taskbot:taskbot_password@postgres:5432/taskbot_db
+      - REDIS_URL=redis://redis:6379/0
+      - DEBUG=true
+      - LOG_LEVEL=INFO
+    volumes:
+      - .:/app
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    ports:
-      - "8000:8000"
-    environment:
-      - DB_HOST=postgres
-      - REDIS_HOST=redis
-    env_file:
-      - .env
-    volumes:
-      - ./logs:/app/logs
-      - ./uploads:/app/uploads
+    networks:
+      - taskbot_network
     restart: unless-stopped
+    command: celery -A src.worker worker --loglevel=info
 
-  # Frontend Development Server (for development only)
-  frontend-dev:
+  # Celery Beat Scheduler
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: taskbot_scheduler
+    environment:
+      - DATABASE_URL=postgresql://taskbot:taskbot_password@postgres:5432/taskbot_db
+      - REDIS_URL=redis://redis:6379/0
+      - DEBUG=true
+      - LOG_LEVEL=INFO
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - taskbot_network
+    restart: unless-stopped
+    command: celery -A src.worker beat --loglevel=info
+
+  # Flower for Celery Monitoring
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: taskbot_flower
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "5555:5555"
+    volumes:
+      - .:/app
+    depends_on:
+      - redis
+    networks:
+      - taskbot_network
+    restart: unless-stopped
+    command: celery -A src.worker flower --port=5555
+
+  # React Frontend (Development)
+  frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile.dev
-    container_name: taskbot_frontend_dev
+    container_name: taskbot_frontend
     ports:
       - "3000:3000"
     volumes:
@@ -92,10 +169,13 @@ services:
     environment:
       - REACT_APP_API_URL=http://localhost:8000
       - REACT_APP_WS_URL=ws://localhost:8000
-    profiles:
-      - dev
+      - CHOKIDAR_USEPOLLING=true
+    networks:
+      - taskbot_network
+    restart: unless-stopped
+    command: npm start
 
-  # Nginx Reverse Proxy (for production)
+  # Nginx Reverse Proxy (Production)
   nginx:
     image: nginx:alpine
     container_name: taskbot_nginx
@@ -107,51 +187,56 @@ services:
       - ./nginx/ssl:/etc/nginx/ssl
       - ./frontend/build:/usr/share/nginx/html
     depends_on:
-      - web-api
+      - web
+      - frontend
+    networks:
+      - taskbot_network
+    restart: unless-stopped
     profiles:
-      - prod
+      - production
 
-  # Celery Worker for Background Tasks
-  celery-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-    container_name: taskbot_celery_worker
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      - DB_HOST=postgres
-      - REDIS_HOST=redis
-    env_file:
-      - .env
+  # Prometheus for Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: taskbot_prometheus
+    ports:
+      - "9090:9090"
     volumes:
-      - ./logs:/app/logs
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - taskbot_network
     restart: unless-stopped
+    profiles:
+      - monitoring
 
-  # Celery Beat Scheduler
-  celery-beat:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-    container_name: taskbot_celery_beat
-    command: celery -A src.celery_app beat --loglevel=info
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      - DB_HOST=postgres
-      - REDIS_HOST=redis
-    env_file:
-      - .env
+  # Grafana for Visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: taskbot_grafana
+    ports:
+      - "3001:3000"
     volumes:
-      - ./logs:/app/logs
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      - taskbot_network
     restart: unless-stopped
+    profiles:
+      - monitoring
 
 volumes:
   postgres_data:
+    driver: local
   redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  taskbot_network:
+    driver: bridge

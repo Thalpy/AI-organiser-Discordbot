@@ -1,6 +1,7 @@
 """
 WebSocket manager for real-time updates in Discord Task Management Bot
 Handles WebSocket connections, message broadcasting, and real-time synchronization
+Enhanced with Discord-Web bridge integration
 """
 
 import json
@@ -94,6 +95,10 @@ class WebSocketManager:
         """Broadcast message to multiple users"""
         for user_id in user_ids:
             await self.send_personal_message(message, user_id)
+    
+    async def send_to_multiple_users(self, message: Dict[str, Any], user_ids: List[str]):
+        """Send message to multiple users (alias for broadcast_to_users)"""
+        await self.broadcast_to_users(message, user_ids)
     
     async def broadcast_to_all(self, message: Dict[str, Any]):
         """Broadcast message to all connected users"""
